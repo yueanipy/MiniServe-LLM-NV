@@ -1,0 +1,71 @@
+[build-system]
+# 构建后端只负责驱动 CMake/Ninja；torch 由运行环境精确安装，并通过
+# --no-build-isolation 避免构建隔离环境再下载一套不一致的 torch。
+requires = ["scikit-build-core==1.0.3"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "miniserve-llm-nv"
+version = "0.0.1"
+description = "A staged, single-GPU NVIDIA LLM serving runtime built for learning and verification."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  # Profile L 当前经过实测的 Python API/ABI 基线；CUDA wheel 来源由 bootstrap 指定。
+  "torch==2.13.0",
+]
+
+[project.optional-dependencies]
+build-test = [
+  "cmake==4.4.2",
+  "ninja==1.13.0",
+  "pytest==9.1.1",
+]
+models = [
+  # Hugging Face 只承担配置、tokenizer、权重文件和 correctness oracle；
+  # 正式 EngineCore 不调用 AutoModelForCausalLM。
+  "transformers==4.57.1",
+  "tokenizers==0.22.1",
+  "safetensors==0.6.2",
+  "huggingface-hub==0.36.0",
+]
+serve = [
+  # Web 类型只允许出现在 miniserve.api；EngineCore 保持框架无关。
+  "fastapi==0.141.1",
+  "pydantic==2.13.4",
+  "uvicorn==0.52.1",
+  "httpx==0.28.1",
+]
+
+[project.scripts]
+# 工具入口用于环境证据与低负载 benchmark；miniserve-serve 是最终服务入口。
+miniserve-probe = "miniserve.toolchain.probe:main"
+miniserve-verify-binary = "miniserve.toolchain.verify_binary:main"
+miniserve-plot-phase0 = "miniserve.toolchain.visualize:main"
+miniserve-benchmark-vector-add = "miniserve.toolchain.benchmark_vector_add:main"
+miniserve-benchmark-rmsnorm = "miniserve.toolchain.benchmark_rmsnorm:main"
+miniserve-benchmark-paged-decode = "miniserve.toolchain.benchmark_paged_decode:main"
+miniserve-benchmark-cuda-graph = "miniserve.toolchain.benchmark_cuda_graph_decode:main"
+miniserve-load-test = "miniserve.benchmark.load_test:main"
+miniserve-serve = "miniserve.api.server:main"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+# 可由 SKBUILD_BUILD_DIR 覆盖到 WSL 的 F 盘 VHDX 缓存，避免在 /mnt/f 上编译。
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["miniserve"]
+cmake.build-type = "Release"
+
+[tool.pytest.ini_options]
+# strict 模式保证拼错的配置/marker 立即失败，不会悄悄少跑一类测试。
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+  "unit_cpu: tests that do not require Linux or CUDA",
+  "cuda_extension: tests that require the real Linux CUDA extension",
+  "correctness: numerical comparisons against a trusted reference",
+  "model_weights: tests that require downloaded real model weights",
+  "integration: tests that exercise the MiniServe EngineCore path",
+]

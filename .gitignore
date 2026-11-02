@@ -1,0 +1,31 @@
+# Local models, model locks and credentials
+local/
+model-locks/
+models/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+# Generated output, never source
+evidence/
+outputs/
+logs/
+build/
+dist/
+*.egg-info/
+.venv*/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.so
+*.dll
+*.whl
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.log
+*.nsys-rep
+*.ncu-rep

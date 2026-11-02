@@ -1,0 +1,14 @@
+# MiniServe Profile D exact Python dependency set.
+# PyTorch uses the official cu130 index and is installed separately by bootstrap_profile_d.sh.
+scikit-build-core==1.0.3
+cmake==4.4.2
+ninja==1.13.0
+pytest==9.1.1
+transformers==4.57.1
+tokenizers==0.22.1
+safetensors==0.6.2
+huggingface-hub==0.36.0
+fastapi==0.141.1
+pydantic==2.13.4
+uvicorn==0.52.1
+httpx==0.28.1
