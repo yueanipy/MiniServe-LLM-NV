@@ -8,14 +8,31 @@
 
 ### 已实现的工程能力
 
-- **真正的 GPU 批执行**：将多个请求的 decode 合成一次模型 forward，按请求 ID 回填；配合 sequence / RNG / KV 的提交边界，处理重排、取消和失败，区别于仅在调度器中选出多个请求。
-- **Paged KV 与前缀复用**：按物理块统计容量、共享引用和缓存所有权，支持缓存驱逐与回收，减少重复前缀计算。
-- **可运行的服务链路**：模型锁与权重校验、CUDA 算子、调度与执行、HTTP / SSE、终态和资源释放串成完整链路。
-- **分层验证**：精简发布前在本机通过 131 项 CPU、24 项真实 CUDA 测试，以及新源码构建、真实 HTTP 与 SSE 请求验证。
+项目覆盖从模型计算到对外服务的完整推理链路，不只是 benchmark 脚本或上游服务包装：
+
+```text
+HTTP / SSE → 请求校验与分词 → 调度与状态机 → KV预留
+          → 模型前向 / CUDA算子 / Graph → 采样与状态提交
+          → 增量解码与流式返回 → 终态与资源回收
+```
+
+| 能力 | 已完成内容 |
+| --- | --- |
+| 模型前向与严格加载 | 实现 dense Transformer 的 embedding、RoPE、GQA、RMSNorm、MLP 和 logits 计算；加载 safetensors 时检查权重名称、形状、tied weights、固定模型版本及文件哈希。正式执行不调用 HF `AutoModelForCausalLM` 代跑。支持锁定的 Qwen3 和严格 SmolLM2-compatible Llama 子集。 |
+| 增量推理与位置管理 | 实现 prefill / decode 分离、连续 KV 缓存、绝对位置与因果 mask；区分已生成 token、已计算 token 和尚未写入 KV 的 pending token，避免增量位置错位。 |
+| 调度与真正的 GPU 批执行 | 请求生命周期状态机与 continuous scheduling；将多个请求的 decode 合成一次模型 forward，按稳定请求 ID 回填。sequence / RNG / KV 有提交边界，覆盖加入、重排、取消和失败，不把调度并发数当作 GPU 批执行。 |
+| Paged KV 与前缀复用 | 物理 block allocator、block table、slot mapping、引用计数及 prepare / commit / abort；完整块前缀复用、LRU驱逐和共享所有权记账。完整前缀命中仍按需要重算尾部以取得 logits，不缓存或伪造 logits。 |
+| CUDA 算子 | C++ / CUDA 扩展、vector add、RMSNorm、paged decode attention 与 KV append；包含真实扩展加载、设备 / dtype / shape 校验及数值对照，不使用假 CUDA 或 CPU fallback 冒充 GPU 执行。 |
+| CUDA Graph | 支持单请求完整 decode 的静态 buffer、capture / replay，以及显式的批执行实验路径；不支持的组合有校验或对应 eager 路径，不宣称所有输入都能 capture。 |
+| HTTP / SSE 与采样 | OpenAI风格接口、增量反分词、多字节字符处理、greedy / top-k / top-p、每请求随机流和 seed；有界命令队列与结果通道、backpressure、客户端断连取消及 admission 控制。 |
+| 故障与可观测性 | 普通请求错误与设备 fatal 分开处理；失败终态、readiness、超时和资源释放；输出 Prometheus 指标，并记录 TTFT、请求级TPOT、延迟、成功 / 失败分母和SLO / Goodput。 |
+| 构建与验证工具 | 固定依赖、模型下载与SHA-256锁、native wheel构建、二进制架构检查、PyTorch / HF参考对照及真实HTTP基准工具；CPU、CUDA和真实模型验证各有明确边界。 |
+
+完整工程的验证包括 **1,057项CPU回归、128项CUDA算子、170项主链测试及2项SmolLM2测试**；主链另有5项可选FlashInfer跳过，跳过不算通过，各组重叠不相加。精简源码发布还在本机执行了 **131项CPU、24项真实CUDA测试**，以及新源码构建、真实HTTP和SSE请求验证；本仓库只保留代表性测试，不上传全部测试和实验数据。
 
 ### 批处理的服务收益
 
-以下是项目历史阶段的同版本 serial / batched 对照：单 RTX 5060 Ti、Qwen3-1.7B FP16、eager、固定 2,340 个 KV blocks，prefix / chunk 关闭，**8 并发，每场景 3 组配对筛选**。
+以下是完整工程中执行的同版本 serial / batched 对照：单 RTX 5060 Ti、Qwen3-1.7B FP16、eager、固定 2,340 个 KV blocks，prefix / chunk 关闭，**8 并发，每场景 3 组配对筛选**。
 
 | 请求场景 | 串行总输出吞吐 | 批处理总输出吞吐 | 吞吐倍率 | 请求中位耗时：串行 → 批处理 |
 | --- | ---: | ---: | ---: | ---: |
@@ -26,7 +43,7 @@ token/s 是所有请求合计的服务输出吞吐，不是单个用户的速度
 
 ### 缓存、显存利用与可靠性
 
-| 项目 | 历史实测观察 |
+| 项目 | 实测观察 |
 | --- | --- |
 | 共享前缀、8并发、150秒窗口 | prefix off / on 的窗口成功请求中位数 **144 → 184，增加约28%** |
 | 混合负载、8并发、120秒窗口 | prefix off / on 的窗口成功请求中位数 **176 → 248，增加约41%**；长请求首 token 等待 p50 **1.247 → 0.394秒** |
@@ -35,7 +52,7 @@ token/s 是所有请求合计的服务输出吞吐，不是单个用户的速度
 
 分页的收益主要是显存利用率和容量，不等于总显存必然下降：低负载会预分配缓存池，实测新增分配反而多约304 MiB。共享前缀收益依赖输入复用，不能与批处理倍率相乘。
 
-**结果边界：**上述性能与容量数字来自原完整工程的历史候选和特定配置，不是这个精简发布版重新执行的完整矩阵，也不是“最初版 → 最终版”的统一A/B结论。它们是有限筛选观察，不认证可靠P99、任意输入收益或通用提速。原始实验数据未随源码发布，不能据此视为可由本仓库直接审计的公开基准。Graph / sampling / C1 的负结果仍保留，项目不声称性能领先于 vLLM。
+**结果边界：**上述数字分别绑定对应模型、硬件、执行版本和配置，是固定条件下的实测，不代表所有请求或默认配置都有相同收益。精简发布未重新执行完整性能矩阵，也不认证可靠P99或通用提速。原始实验数据未随源码发布，不能据此视为可由本仓库直接审计的公开基准。Graph / sampling / C1 的负结果仍保留，项目不声称性能领先于 vLLM。
 
 ## 环境
 
